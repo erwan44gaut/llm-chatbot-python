@@ -50,6 +50,9 @@ Do not answer any questions that do not relate to movies, actors or directors.
 
 Do not answer any questions using your pre-trained knowledge, only use the information provided in the context.
 
+If you cannot find an answer using the tools, respond with:
+Final Answer: I'm sorry, but I couldn't find any information about that in my database.
+
 TOOLS:
 ------
 
@@ -57,7 +60,7 @@ You have access to the following tools:
 
 {tools}
 
-To use a tool, please use the following format:
+To use a tool, please use the following format exactly:
 
 ```
 Thought: Do I need to use a tool? Yes
@@ -88,6 +91,7 @@ agent_executor = AgentExecutor(
     tools=tools,
     verbose=True,
     handle_parsing_errors=True,
+    max_iterations=5,
     )
 
 chat_agent = RunnableWithMessageHistory(
@@ -102,9 +106,12 @@ def generate_response(user_input):
     Create a handler that calls the Conversational agent
     and returns a response to be rendered in the UI
     """
-
-    response = chat_agent.invoke(
-        {"input": user_input},
-        {"configurable": {"session_id": get_session_id()}},)
-
-    return response['output']
+    try:
+        response = chat_agent.invoke(
+            {"input": user_input},
+            {"configurable": {"session_id": get_session_id()}},
+        )
+        return response.get('output', "Désolé, je n'ai pas pu générer de réponse.")
+    
+    except Exception as e:
+        return f"Erreur lors de la génération de réponse : {str(e)}"

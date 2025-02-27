@@ -13,6 +13,11 @@ from utils import get_session_id
 from tools.vector import get_movie_plot
 from tools.cypher import cypher_qa
 
+import time
+from openai import APIError
+
+import json
+
 chat_prompt = ChatPromptTemplate.from_messages(
     [
         ("system", "You are a movie expert providing information about movies."),
@@ -21,6 +26,19 @@ chat_prompt = ChatPromptTemplate.from_messages(
 )
 
 movie_chat = chat_prompt | llm | StrOutputParser()
+
+def safe_tool_call(func, *args, **kwargs):
+    """
+    Executes a tool safely and ensures it returns a well-formatted JSON response.
+    """
+    try:
+        result = func(*args, **kwargs)
+        if isinstance(result, str):  # Vérifier si la réponse est une chaîne de texte brute
+            result = json.loads(result)  # Essayer de la convertir en JSON
+        return result
+    except (json.JSONDecodeError, TypeError) as e:
+        print(f"⚠️ Tool Error: Output was not valid JSON. Error: {str(e)}")
+        return {"error": "Invalid response format"}
 
 tools = [
     Tool.from_function(
@@ -31,12 +49,12 @@ tools = [
     Tool.from_function(
         name="Movie Plot Search",  
         description="For when you need to find information about movies based on a plot",
-        func=get_movie_plot, 
+        func=lambda *args, **kwargs: safe_tool_call(get_movie_plot, *args, **kwargs),
     ),
     Tool.from_function(
         name="Movie information",
         description="Provide information about movies questions using Cypher",
-        func = cypher_qa
+        func=lambda *args, **kwargs: safe_tool_call(cypher_qa, *args, **kwargs),
     )
 ]
 
@@ -49,6 +67,12 @@ Be as helpful as possible and return as much information as possible.
 Do not answer any questions that do not relate to movies, actors or directors.
 
 Do not answer any questions using your pre-trained knowledge, only use the information provided in the context.
+
+Important: Always follow the exact output format below.
+If you deviate, the system will not understand your response.
+
+If you cannot find an answer using the tools, respond with:
+Final Answer: I'm sorry, but I couldn't find any information about that in my database.
 
 TOOLS:
 ------
@@ -86,8 +110,10 @@ agent = create_react_agent(llm, tools, agent_prompt)
 agent_executor = AgentExecutor(
     agent=agent,
     tools=tools,
-    verbose=True
-    )
+    verbose=True,
+    handle_parsing_errors=True,
+    max_iterations=3,
+)
 
 chat_agent = RunnableWithMessageHistory(
     agent_executor,
@@ -98,12 +124,17 @@ chat_agent = RunnableWithMessageHistory(
 
 def generate_response(user_input):
     """
-    Create a handler that calls the Conversational agent
-    and returns a response to be rendered in the UI
+    Calls the Conversational agent and handles errors.
     """
-
-    response = chat_agent.invoke(
-        {"input": user_input},
-        {"configurable": {"session_id": get_session_id()}},)
-
-    return response['output']
+    max_retries = 3  # Nombre de tentatives max
+    for attempt in range(max_retries):
+        try:
+            response = chat_agent.invoke(
+                {"input": user_input},
+                {"configurable": {"session_id": get_session_id()}},
+            )
+            return response['output']
+        except APIError as e:
+            print(f"⚠️ OpenAI API Error: {str(e)} - Attempt {attempt+1}/{max_retries}")
+            time.sleep(2)  # Attendre avant de réessayer
+    return "Sorry, I encountered an issue while generating a response."
